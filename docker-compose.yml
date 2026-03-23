@@ -1,0 +1,93 @@
+version: "3.8"
+
+networks:
+  poc-net:
+    driver: bridge
+
+services:
+
+  # ── Kafka infrastructure ─────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    networks: [poc-net]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    networks: [poc-net]
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"          # expose to host so you can inspect with kcat etc.
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"   # topics created on first write
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      retries: 15
+
+  # ── Flink cluster ─────────────────────────────────────────
+  jobmanager:
+    build: ./flink
+    networks: [poc-net]
+    ports:
+      - "8081:8081"          # Flink Web UI
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1024m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/overview"]
+      interval: 15s
+      retries: 20
+
+  taskmanager:
+    build: ./flink
+    networks: [poc-net]
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+    command: taskmanager
+    environment:
+      KAFKA_BROKER: kafka:9092
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.memory.process.size: 1024m
+        taskmanager.numberOfTaskSlots: 2
+
+  # Submits the job once everything is ready
+  flink-job:
+    build: ./flink
+    networks: [poc-net]
+    depends_on:
+      jobmanager:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+    entrypoint: ["bash", "-c", "sleep 5 && python3 /app/job.py"]
+    restart: on-failure
+
+  # ── Node.js producer ──────────────────────────────────────
+  producer:
+    build: ./producer
+    networks: [poc-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+    restart: unless-stopped
