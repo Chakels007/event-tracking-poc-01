@@ -50,14 +50,34 @@ def main():
     )
 
     # ── Transform: stamp each message as "processed" ─────────
-    def enrich(raw: str) -> str:
+    # count = 0
+    # def enrich(raw: str) -> str:
+    #     global count
+    #     try:
+    #         msg = json.loads(raw)
+    #         count += 1
+    #         msg["processed"] = True          # only change: add this flag
+    #         msg["processed_by"] = "flink"
+    #         msg["total_processed"] = count
+    #         return json.dumps(msg)
+    #     except Exception as e:
+    #         print(f"Error in enrich: {e}")
+    #         return raw                        # pass through unparseable messages as-is
+
+# Flink's map function doesn't allow us to use a global variable for counting, 
+# so we use a mutable default argument as a workaround.
+# To enrich each message, we parse it as JSON, add some fields, and serialize it back to a string.
+    def enrich(raw: str, _state=[0]) -> str:
         try:
             msg = json.loads(raw)
-            msg["processed"] = True          # only change: add this flag
+            _state[0] += 1
+            msg["processed"] = True
             msg["processed_by"] = "flink"
+            msg["total_processed"] = _state[0]
             return json.dumps(msg)
-        except Exception:
-            return raw                        # pass through unparseable messages as-is
+        except Exception as e:
+            print(f"ERROR in enrich: {e}")
+            return raw
 
     processed = stream.map(enrich, output_type=Types.STRING())
 
